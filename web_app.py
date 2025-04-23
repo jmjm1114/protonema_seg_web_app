@@ -157,16 +157,17 @@ def segment_protonema_by_excluding_bg(
 
 
 def main():
-    st.title("Protonema Segmentation v.2.2")
+    st.title("Protonema Segmentation v.2.3")
     st.write("여러 이미지를 한 번에 업로드 가능, zip 파일 처리 가능, K값은 3 추천. 처리 잘 안될 시 배경 RGB값 조정 필요.")
+    st.write("스케일바 기능 추가")
 
     k = st.sidebar.slider("클러스터 개수 (k)", 2, 6, 2)
     attempts = st.sidebar.slider("K-means 반복 횟수 (attempts)", 1, 20, 10)
 
     # 배경 대표색(BGR) 사용자 입력(선택)
-    bg_r = st.sidebar.number_input("배경 R값 (0~255)", 0, 255, 204)
-    bg_g = st.sidebar.number_input("배경 G값 (0~255)", 0, 255, 216)
-    bg_b = st.sidebar.number_input("배경 B값 (0~255)", 0, 255, 152)
+    bg_r = st.sidebar.number_input("배경 R값 (0~255)", 0, 255, 240)
+    bg_g = st.sidebar.number_input("배경 G값 (0~255)", 0, 255, 240)
+    bg_b = st.sidebar.number_input("배경 B값 (0~255)", 0, 255, 240)
     known_background_bgr = (bg_b, bg_g, bg_r)  # OpenCV는 BGR 순서
 
     uploaded_files = st.file_uploader(
@@ -186,7 +187,14 @@ def main():
 
             for (fname, img) in images_data:
                 st.subheader(f"파일명: {fname}")
-                scale_bar_length = st.sidebar.number_input("스케일바 길이(mm)", 0.1, 10.0, 1.0, step=0.1)
+                scale_bar_length = st.sidebar.number_input(
+                    "스케일바 길이(mm)",
+                    min_value = 0.1,
+                    max_value = 10.0,
+                    valuer = 1.0,
+                    step=0.1,
+                    key=f"scale_bar_length_{fname}"
+                    )
                 mm_per_pixel = find_scale_bar(img, expected_bar_width_mm=scale_bar_length)
 
                 mask, result_img, area_px, ratio_pct = segment_protonema_by_excluding_bg(
