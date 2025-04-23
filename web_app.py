@@ -186,8 +186,8 @@ def main():
 
             for (fname, img) in images_data:
                 st.subheader(f"파일명: {fname}")
-
-                mm_per_pixel = find_scale_bar(img, expected_bar_width_mm=1.0)
+                scale_bar_length = st.sidebar.number_input("스케일바 길이(mm)", 0.1, 10.0, 1.0, step=0.1)
+                mm_per_pixel = find_scale_bar(img, expected_bar_width_mm=scale_bar_length)
 
                 mask, result_img, area_px, ratio_pct = segment_protonema_by_excluding_bg(
                     img,
