@@ -3,155 +3,229 @@
 import streamlit as st
 import cv2
 import numpy as np
-import os
-import pandas as pd
-from datetime import datetime
+import zipfile
+import io
+from typing import List, Tuple
 #%%
-def segment_protonema_by_excluding_bg(
-    img, 
-    k=2,
-    attempts=10, 
-    known_background_bgr=(204, 216, 152)
-):
+def read_images_from_upload(uploaded_file) -> List[Tuple[str, np.ndarray]]:
     """
-    K-means로 분할한 뒤, 배경 색에 가장 가까운 클러스터를 제외하고 나머지를
-    '프로토네마'로 간주하는 예시
+    업로드된 파일이 단일 이미지이면 하나만, ZIP 파일이면 내부 이미지 전부를 추출하여
+    (파일명, img) 리스트로 반환한다.
     """
-    # 1) LAB 변환
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    pixel_vals = lab.reshape((-1, 3))
-    pixel_vals = np.float32(pixel_vals)
-    
-    # 2) K-means 실행
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-    _, labels, centers = cv2.kmeans(pixel_vals, k, None, criteria, attempts, cv2.KMEANS_RANDOM_CENTERS)
-    
-    # 3) 클러스터링 결과 -> 이미지
-    centers = np.uint8(centers)
-    segmented_data = centers[labels.flatten()]
-    segmented_image = segmented_data.reshape(img.shape)
-    
-    # 4) '배경' 클러스터 찾기
-    known_bg_lab = cv2.cvtColor(np.uint8([[known_background_bgr]]), cv2.COLOR_BGR2LAB)[0,0,:]
-    distances = [np.linalg.norm(center - known_bg_lab) for center in centers]
-    background_cluster_idx = np.argmin(distances)  # 배경과 가장 가까운 클러스터
-    
-    # 5) 마스크 생성: 배경이 아닌 것만 1
-    mask = (labels != background_cluster_idx).astype(np.uint8) * 255
-    
-    # 6) 노이즈 제거 (모폴로지 연산)
-    kernel = np.ones((3,3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    
-    # (선택) 가장 큰 연결 요소만 남기고 싶다면:
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if len(contours) > 0:
-        largest_contour = max(contours, key=cv2.contourArea)
-        new_mask = np.zeros_like(mask)
-        cv2.drawContours(new_mask, [largest_contour], -1, 255, cv2.FILLED)
-        mask = new_mask
-    
-    # 7) 결과 시각화
-    result_img = img.copy()
-    result_img[mask > 0] = [0, 255, 0]  # 초록색
-    
-    return mask, segmented_image, result_img
+    images = []
+    filename = uploaded_file.name.lower()
+
+    # 파일 내용 바이트로 읽기
+    file_bytes = uploaded_file.read()
+
+    if filename.endswith('.zip'):
+        # ZIP 파일로 처리
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+            for name in zf.namelist():
+                # 내부 파일 중 이미지 확장자만 시도
+                if any(name.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.tif', '.tiff']):
+                    # 파일 읽기
+                    img_data = zf.read(name)
+                    # OpenCV로 디코딩
+                    np_data = np.frombuffer(img_data, np.uint8)
+                    img = cv2.imdecode(np_data, cv2.IMREAD_UNCHANGED)
+                    img = ensure_3ch(img)  # 그레이/4채널 → 3채널 변환
+                    if img is not None and img.shape[0] > 0 and img.shape[1] > 0:
+                        images.append((name, img))
+    else:
+        # 단일 이미지로 처리
+        np_data = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(np_data, cv2.IMREAD_UNCHANGED)
+        img = ensure_3ch(img)  # 그레이/4채널 → 3채널 변환
+        if img is not None and img.shape[0] > 0 and img.shape[1] > 0:
+            images.append((uploaded_file.name, img))
+
+    return images
+
+
+def ensure_3ch(img: np.ndarray) -> np.ndarray:
+    """
+    입력 이미지를 항상 3채널 BGR로 맞춰준다.
+    - 그레이(2D) → BGR
+    - 4채널(BGRA) → BGR
+    """
+    if img is None:
+        return None
+    if len(img.shape) == 2:
+        # Grayscale인 경우
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif len(img.shape) == 3 and img.shape[2] == 4:
+        # BGRA인 경우
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    return img
+
 
 def find_scale_bar(img, expected_bar_width_mm=1.0):
     """
-    (간단 예시) 우측 하단에서 스케일바 검출 후 픽셀 길이를 측정해 mm 당 픽셀 환산비를 리턴
+    (간단 예시) 우측 하단에서 스케일바 검출 후 픽셀 길이를 측정해 mm당 픽셀 환산비를 리턴.
     """
     h, w = img.shape[:2]
+    # 안전장치: h나 w가 매우 작으면 바로 None 반환
+    if h < 80 or w < 200:
+        return None
+
     roi = img[h-80:h, w-200:w].copy()
-    
+
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
-    
+
     kernel = np.ones((3,3), np.uint8)
     cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    
+
     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     max_width = 0
     for cnt in contours:
         x, y, w_cnt, h_cnt = cv2.boundingRect(cnt)
         if w_cnt > max_width:
             max_width = w_cnt
-    
+
     if max_width > 0:
         mm_per_pixel = expected_bar_width_mm / max_width
     else:
         mm_per_pixel = None
-    
     return mm_per_pixel
 
+
+def segment_protonema_by_excluding_bg(
+    img: np.ndarray,
+    known_background_bgr=(204, 216, 152),
+    k=2,
+    attempts=10
+):
+    """
+    K-means로 이미지 분할 후, 배경 색에 가장 가까운 클러스터를 제외한 나머지를 '프로토네마'라 간주.
+    """
+    # --- 1) LAB 변환
+    # (H, W, 3)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    H, W = lab.shape[:2]
+
+    # 2D로 만들기
+    pixel_vals = lab.reshape((-1, 3))  # shape (H*W, 3)
+    pixel_vals = np.float32(pixel_vals)
+
+    # --- 2) K-means 실행
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+    _, labels, centers = cv2.kmeans(
+        pixel_vals, k, None, criteria, attempts,
+        cv2.KMEANS_RANDOM_CENTERS
+    )
+
+    # --- 3) '배경' 클러스터 찾기
+    known_bg_lab = cv2.cvtColor(
+        np.uint8([[known_background_bgr]]), cv2.COLOR_BGR2LAB
+    )[0, 0, :]
+    distances = [np.linalg.norm(c - known_bg_lab) for c in centers]
+    background_cluster_idx = np.argmin(distances)
+
+    # --- 4) 마스크 생성 (배경이 아닌 것만)
+    # labels shape: (H*W,) -> (H, W)
+    labels_2d = labels.reshape(H, W)
+    mask = (labels_2d != background_cluster_idx).astype(np.uint8)
+
+    # --- 5) 노이즈 제거
+    kernel = np.ones((3,3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # (선택) 가장 큰 연결 요소만 남기고 싶다면:
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        new_mask = np.zeros_like(mask)
+        cv2.drawContours(new_mask, [largest_contour], -1, 1, cv2.FILLED)
+        mask = new_mask
+
+    # --- 6) 면적 계산
+    total_pixels = H * W
+    protonema_area = cv2.countNonZero(mask)
+    protonema_percentage = (protonema_area / total_pixels) * 100
+
+    # --- 7) 결과 시각화
+    result_img = img.copy()  # (H, W, 3)
+    # mask shape: (H, W), so mask>0 shape: (H, W)
+    # => indexing is valid
+    result_img[mask > 0] = [0, 255, 0]  # 초록색
+
+    return mask, result_img, protonema_area, protonema_percentage
+
+
 def main():
-    st.title("Protonema Segmentation v.2.1")
-    st.write("배경 색을 알려주고, 해당 색과 가장 가까운 클러스터를 배경으로 보고 제외합니다.")
+    st.title("Protonema Segmentation v.2.2")
+    st.write("여러 이미지를 한 번에 업로드 가능, zip 파일 처리 가능, K값은 3 추천. 처리 잘 안될 시 배경 RGB값 조정 필요.")
 
     k = st.sidebar.slider("클러스터 개수 (k)", 2, 6, 2)
     attempts = st.sidebar.slider("K-means 반복 횟수 (attempts)", 1, 20, 10)
-    
+
     # 배경 대표색(BGR) 사용자 입력(선택)
     bg_r = st.sidebar.number_input("배경 R값 (0~255)", 0, 255, 204)
     bg_g = st.sidebar.number_input("배경 G값 (0~255)", 0, 255, 216)
     bg_b = st.sidebar.number_input("배경 B값 (0~255)", 0, 255, 152)
-    known_background_bgr = (bg_b, bg_g, bg_r)  # OpenCV는 BGR 순서!
-    
+    known_background_bgr = (bg_b, bg_g, bg_r)  # OpenCV는 BGR 순서
+
     uploaded_files = st.file_uploader(
-        "이미지 파일들을 여러 장 선택하세요", 
-        type=['jpg','jpeg','png','tif','tiff'],
+        "이미지 또는 ZIP 파일을 업로드하세요 (다중 가능)",
+        type=['jpg','jpeg','png','tif','tiff','zip'],
         accept_multiple_files=True
     )
-    
+
     if uploaded_files:
-        for uploaded_file in uploaded_files:
-            st.subheader(f"파일명: {uploaded_file.name}")
-            
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            
-            if img is None:
-                st.error("이미지를 읽을 수 없습니다.")
+        for up_file in uploaded_files:
+            # 여러 개의 (파일명, 이미지) 추출
+            images_data = read_images_from_upload(up_file)
+
+            if not images_data:
+                st.warning(f"'{up_file.name}'에서 유효한 이미지를 찾지 못했습니다.")
                 continue
-            
-            mm_per_pixel = find_scale_bar(img, expected_bar_width_mm=1.0)
-            
-            mask, segmented, result_img = segment_protonema_by_excluding_bg(
-                img, k, attempts, known_background_bgr
-            )
-            
-            protonema_pixels = cv2.countNonZero(mask)
-            total_pixels = img.shape[0] * img.shape[1]
-            protonema_ratio = (protonema_pixels / total_pixels) * 100
-            
-            if mm_per_pixel:
-                area_in_mm2 = protonema_pixels * (mm_per_pixel ** 2)
-                st.write(f"• 프로토네마 픽셀 수: {protonema_pixels}")
-                st.write(f"• 전체 픽셀 수: {total_pixels}")
-                st.write(f"• 프로토네마 비율: {protonema_ratio:.2f}%")
-                st.write(f"• 추정 스케일바 길이(pixels): 1 mm ≈ {int(1/mm_per_pixel)} px")
-                st.write(f"• 프로토네마 실제 면적 추정: {area_in_mm2:.4f} mm²")
-            else:
-                st.write(f"• 프로토네마 픽셀 수: {protonema_pixels}")
-                st.write(f"• 전체 픽셀 수: {total_pixels}")
-                st.write(f"• 프로토네마 비율: {protonema_ratio:.2f}%")
-                st.warning("스케일바를 찾지 못했습니다. (면적 계산 불가)")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+
+            for (fname, img) in images_data:
+                st.subheader(f"파일명: {fname}")
+
+                mm_per_pixel = find_scale_bar(img, expected_bar_width_mm=1.0)
+
+                mask, result_img, area_px, ratio_pct = segment_protonema_by_excluding_bg(
+                    img,
+                    known_background_bgr=known_background_bgr,
+                    k=k,
+                    attempts=attempts
+                )
+
+                h, w = img.shape[:2]
+                total_px = h * w
+
+                st.write(f"• 프로토네마 픽셀 수: {area_px}")
+                st.write(f"• 전체 픽셀 수: {total_px}")
+                st.write(f"• 프로토네마 비율: {ratio_pct:.2f}%")
+
+                # 면적 환산
+                if mm_per_pixel:
+                    area_mm2 = area_px * (mm_per_pixel ** 2)
+                    px_per_mm = int(1 / mm_per_pixel) if mm_per_pixel != 0 else 0
+                    st.write(f"• 추정 스케일바 길이(pixels): 1 mm ≈ {px_per_mm} px")
+                    st.write(f"• 프로토네마 실제 면적 추정: {area_mm2:.4f} mm²")
+                else:
+                    st.warning("스케일바를 찾지 못했습니다. (면적 계산 불가)")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.image(
+                        cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
                         caption="원본 이미지",
-                        use_column_width=True)
-            with col2:
-                st.image(cv2.cvtColor(segmented, cv2.COLOR_BGR2RGB),
-                        caption="K-means 분할된 이미지",
-                        use_column_width=True)
-            with col3:
-                st.image(cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB),
-                        caption="배경 제외 후",
-                        use_column_width=True)
+                        use_container_width=True
+                    )
+                with col2:
+                    st.image(
+                        cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB),
+                        caption="배경 제외 후 프로토네마 표시",
+                        use_container_width=True
+                    )
+
 
 if __name__ == "__main__":
     main()
