@@ -152,7 +152,7 @@ def segment_protonema_by_excluding_bg(
     return mask, result_img, protonema_area, protonema_percentage
 
 def main():
-    st.title("Protonema Segmentation v.2.3 (CSV 다운로드 포함)")
+    st.title("Protonema Segmentation v.2.4")
     st.write("여러 이미지를 한 번에 업로드 가능, zip 파일 처리 가능.")
     st.write("K값은 3 추천. 처리 잘 안될 시 배경 RGB값 조정 필요.")
     st.write("스케일바 기능 추가. 이미지별 스케일바 길이 조정 가능.")
@@ -253,7 +253,7 @@ def main():
                 st.warning("분석 결과가 없습니다.")
             else:
                 df = pd.DataFrame(results_list)
-                csv_data = df.to_csv(index=False).encode('utf-8')
+                csv_data = df.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(
                     label="CSV 다운로드",
                     data=csv_data,
