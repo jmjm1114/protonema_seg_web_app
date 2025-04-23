@@ -87,7 +87,7 @@ def find_scale_bar(img, expected_bar_width_mm=1.0):
     return mm_per_pixel
 
 def main():
-    st.title("Protonema Segmentation v.2")
+    st.title("Protonema Segmentation v.2.1")
     st.write("배경 색을 알려주고, 해당 색과 가장 가까운 클러스터를 배경으로 보고 제외합니다.")
 
     k = st.sidebar.slider("클러스터 개수 (k)", 2, 6, 2)
@@ -142,16 +142,16 @@ def main():
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
-                         caption="원본 이미지",
-                         use_column_width=True)
+                        caption="원본 이미지",
+                        use_column_width=True)
             with col2:
                 st.image(cv2.cvtColor(segmented, cv2.COLOR_BGR2RGB),
-                         caption="K-means 분할된 이미지",
-                         use_column_width=True)
+                        caption="K-means 분할된 이미지",
+                        use_column_width=True)
             with col3:
                 st.image(cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB),
-                         caption="배경 제외 후",
-                         use_column_width=True)
+                        caption="배경 제외 후",
+                        use_column_width=True)
 
 if __name__ == "__main__":
     main()
